@@ -41,6 +41,7 @@
 </head>
 <body>
   <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
+  <div class="progress" aria-hidden="true"><span></span></div>
 
   <!-- Navegação -->
   <header class="nav" data-theme="dark">
@@ -61,15 +62,22 @@
   </header>
 
   <div class="menu" id="menu" hidden>
+    <div class="menu__glow" aria-hidden="true"></div>
     <nav aria-label="Menu">
-      <a href="#colecao">Coleção</a>
-      <a href="#aromas">Aromas</a>
-      <a href="#personalizadas">Personalizadas</a>
-      <a href="#ocasioes">Ocasiões</a>
-      <a href="#encomende">Encomende</a>
-      <a href="#contato">Contato</a>
+      <a href="#colecao" style="--i:0">Coleção</a>
+      <a href="#aromas" style="--i:1">Aromas</a>
+      <a href="#personalizadas" style="--i:2">Personalizadas</a>
+      <a href="#ocasioes" style="--i:3">Ocasiões</a>
+      <a href="#encomende" style="--i:4">Encomende</a>
+      <a href="#contato" style="--i:5">Contato</a>
     </nav>
-    <a class="btn btn--light" data-wa="Olá, Ma&Ma! Gostaria de conhecer melhor as velas do atelier." href="https://wa.me/5541984016673" target="_blank" rel="noopener">Fale conosco pelo WhatsApp</a>
+    <div class="menu__footer">
+      <a class="btn btn--light" data-wa="Olá, Ma&Ma! Gostaria de conhecer melhor as velas do atelier." href="https://wa.me/5541984016673" target="_blank" rel="noopener">Fale conosco pelo WhatsApp</a>
+      <p class="menu__contact">
+        <a href="mailto:maema.atelier@gmail.com">maema.atelier@gmail.com</a>
+        <a href="https://www.instagram.com/maema.atelier/" target="_blank" rel="noopener">@maema.atelier</a>
+      </p>
+    </div>
   </div>
 
   <main id="conteudo">
@@ -120,10 +128,10 @@
       <article class="product" id="presenca" aria-labelledby="presenca-titulo">
         <figure class="gallery" data-gallery data-reveal>
           <div class="gallery__stage">
-            <div class="shot is-cool is-active">
+            <div class="shot is-cool is-active" data-wick="51,40" data-flame="4.2">
               <img src="assets/img/presenca.webp" srcset="assets/img/presenca-800.webp 800w, assets/img/presenca.webp 1169w" sizes="(max-width: 900px) 100vw, 55vw" width="1169" height="1507" alt="Vela Presença em copo de vidro com rótulo Ma&amp;Ma, sobre mesa lateral clara" loading="lazy">
             </div>
-            <div class="shot is-cool">
+            <div class="shot is-cool" data-wick="50,55" data-flame="5" data-view="top">
               <img src="assets/img/presenca-topo.webp" srcset="assets/img/presenca-topo-800.webp 800w, assets/img/presenca-topo.webp 1152w" sizes="(max-width: 900px) 100vw, 55vw" width="1152" height="1524" alt="Vela Presença vista de cima, com a superfície lisa de cera vegetal" loading="lazy">
             </div>
           </div>
@@ -200,13 +208,13 @@
       <article class="product" id="bubble" aria-labelledby="bubble-titulo">
         <figure class="gallery" data-gallery data-reveal>
           <div class="gallery__stage">
-            <div class="shot is-active" data-size="pequena">
+            <div class="shot is-active" data-size="pequena" data-wick="52.5,60.5" data-flame="6">
               <img src="assets/img/bubble-pequena.webp" width="576" height="768" alt="Vela Bubble pequena, de esferas empilhadas, sob a luz quente da tarde" loading="lazy">
             </div>
-            <div class="shot" data-size="grande">
+            <div class="shot" data-size="grande" data-wick="49,40.5" data-flame="6.5">
               <img src="assets/img/bubble-grande.webp" width="674" height="842" alt="Vela Bubble grande, de esferas empilhadas, sob a luz quente da tarde" loading="lazy">
             </div>
-            <div class="shot" data-size="grande">
+            <div class="shot" data-size="grande" data-wick="50,33.5" data-flame="7">
               <img src="assets/img/bubble-branca.webp" srcset="assets/img/bubble-branca-800.webp 800w, assets/img/bubble-branca.webp 1170w" sizes="(max-width: 900px) 100vw, 55vw" width="1170" height="1438" alt="Vela Bubble grande em close, mostrando o volume de cada esfera de cera" loading="lazy">
             </div>
           </div>
@@ -329,6 +337,50 @@
         <figure class="case case--square" data-reveal>
           <div class="case__img"><img src="assets/img/caso-mavie.webp" width="611" height="644" alt="Vela Bubble personalizada com o nome Mavie gravado em dourado" loading="lazy"></div>
           <figcaption><span class="case__name">Mavie</span><span class="case__type">Bubble personalizada</span></figcaption>
+        </figure>
+      </div>
+
+      <!-- Prévia da personalização -->
+      <div class="label-lab" id="experimente">
+        <div class="label-lab__intro" data-reveal>
+          <p class="eyebrow">Experimente</p>
+          <h3 class="h3">Veja a sua história na vela</h3>
+          <p class="label-lab__text">Escreva os nomes, a data e uma frase. A prévia mostra a personalização na Presença, e tudo segue com você para a encomenda.</p>
+          <form class="label-lab__form" id="label-form" autocomplete="off">
+            <label class="text-field">
+              <span class="text-field__label">Nomes</span>
+              <input type="text" name="names" maxlength="28" placeholder="Ana &amp; Pedro">
+            </label>
+            <div class="label-lab__row">
+              <label class="text-field">
+                <span class="text-field__label">Data</span>
+                <input type="text" name="date" maxlength="16" placeholder="12 · 03 · 2027" inputmode="numeric">
+              </label>
+              <label class="text-field">
+                <span class="text-field__label">Frase</span>
+                <input type="text" name="phrase" maxlength="56" placeholder="Para um amor que merece ser celebrado">
+              </label>
+            </div>
+            <div class="label-lab__actions">
+              <a class="btn btn--dark" href="#encomende" data-label-use>Usar na minha encomenda</a>
+            </div>
+          </form>
+        </div>
+
+        <figure class="label-lab__preview" data-reveal>
+          <div class="label-photo scene" data-wick="51.8,33.4" data-flame="4.6">
+            <img src="assets/img/presenca-rotulo.webp" width="654" height="724" alt="Prévia da vela Presença com a personalização escrita no rótulo" loading="lazy">
+            <div class="label" aria-hidden="true">
+              <div class="label__inner">
+                <p class="label__names" data-label-out="names">Ana &amp; Pedro</p>
+                <span class="label__rule"></span>
+                <p class="label__phrase" data-label-out="phrase">Para um amor que merece ser celebrado</p>
+                <p class="label__date" data-label-out="date">12 · 03 · 2027</p>
+                <p class="label__brand">Ma&amp;Ma<span>Atelier</span></p>
+              </div>
+            </div>
+          </div>
+          <figcaption>Prévia ilustrativa. A composição final é ajustada junto com vocês.</figcaption>
         </figure>
       </div>
 
@@ -467,6 +519,14 @@
             </div>
           </div>
         </aside>
+      </div>
+
+      <div class="order-bar" role="region" aria-label="Resumo da encomenda">
+        <button type="button" class="order-bar__sum" data-order-sum>Presença</button>
+        <a class="btn btn--wa order-bar__send" data-order-wa href="https://wa.me/5541984016673" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 20.5l1.3-4.2A8.5 8.5 0 1 1 8 19.4z"/><path d="M9 8.5c0 3.5 2.6 6.5 6.5 6.6l1-1.6-2-1-1 .9c-1.3-.5-2.3-1.5-2.8-2.8l.9-1-1-2-1.6 1z"/></svg>
+          Enviar
+        </a>
       </div>
     </section>
 

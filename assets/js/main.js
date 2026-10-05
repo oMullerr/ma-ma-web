@@ -10,9 +10,19 @@
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
   const waLink = (msg) => `https://wa.me/${WHATSAPP}?text=${encodeURIComponent(msg)}`;
+  const buzz = (ms) => { if (navigator.vibrate) { try { navigator.vibrate(ms); } catch (e) { /* sem vibração */ } } };
 
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const mqMobile = window.matchMedia('(max-width: 900px)');
   const body = document.body;
+  const root = document.documentElement;
+
+  const ICON = {
+    flame: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c.6 3.2 4.5 5.4 4.5 9.6A4.5 4.5 0 0 1 12 17a4.5 4.5 0 0 1-4.5-4.4c0-2.2 1.3-3.4 2.2-4.6.3 1.4 1 2.3 1.9 2.6C11.4 8.5 11.2 5.6 12 3z"/><path d="M12 17v4"/></svg>',
+    expand: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>',
+    prev: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>',
+    next: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>',
+  };
 
   /* ---------- Links de WhatsApp com mensagem pronta ---------- */
   $$('[data-wa]').forEach((a) => { a.href = waLink(a.dataset.wa); });
@@ -21,34 +31,85 @@
   const year = $('[data-year]');
   if (year) year.textContent = new Date().getFullYear();
 
-  /* ---------- Chamas: converte a posição da chama na foto para a área visível (object-fit: cover) ---------- */
-  function placeFlame(flame) {
-    const box = flame.parentElement;
-    const img = $('img', box);
-    if (!img || !img.naturalWidth) return;
-    if (!flame.dataset.fx) {
-      flame.dataset.fx = parseFloat(flame.style.getPropertyValue('--fx')) || 50;
-      flame.dataset.fy = parseFloat(flame.style.getPropertyValue('--fy')) || 50;
-    }
+  /* ---------- Converte um ponto da foto (em %) para a área visível (object-fit: cover) ---------- */
+  function mapPoint(box, img, fx, fy) {
     const w = box.clientWidth, h = box.clientHeight;
-    if (!w || !h) return;
+    if (!img || !img.naturalWidth || !w || !h) return null;
     const nw = img.naturalWidth, nh = img.naturalHeight;
     const scale = Math.max(w / nw, h / nh);
     const dw = nw * scale, dh = nh * scale;
     const pos = getComputedStyle(img).objectPosition.split(' ');
     const px = pos[0] && pos[0].endsWith('%') ? parseFloat(pos[0]) / 100 : 0.5;
     const py = pos[1] && pos[1].endsWith('%') ? parseFloat(pos[1]) / 100 : 0.5;
-    const x = (w - dw) * px + (flame.dataset.fx / 100) * dw;
-    const y = (h - dh) * py + (flame.dataset.fy / 100) * dh;
-    flame.style.setProperty('--fx', `${(x / w) * 100}%`);
-    flame.style.setProperty('--fy', `${(y / h) * 100}%`);
+    return {
+      x: ((w - dw) * px + (fx / 100) * dw) / w * 100,
+      y: ((h - dh) * py + (fy / 100) * dh) / h * 100,
+      dw,
+    };
   }
-  const placeAllFlames = () => $$('.flame').forEach(placeFlame);
-  $$('.flame').forEach((f) => {
-    const img = $('img', f.parentElement);
-    if (img && !img.complete) img.addEventListener('load', () => placeFlame(f), { once: true });
+
+  /* ---------- Chamas das fotos acesas ---------- */
+  function placeFlame(flame) {
+    if (!flame.dataset.fx) {
+      flame.dataset.fx = parseFloat(flame.style.getPropertyValue('--fx')) || 50;
+      flame.dataset.fy = parseFloat(flame.style.getPropertyValue('--fy')) || 50;
+    }
+    const p = mapPoint(flame.parentElement, $('img', flame.parentElement), +flame.dataset.fx, +flame.dataset.fy);
+    if (!p) return;
+    flame.style.setProperty('--fx', `${p.x}%`);
+    flame.style.setProperty('--fy', `${p.y}%`);
+  }
+
+  /* ---------- Velas que podem ser acesas ---------- */
+  const scenes = $$('[data-wick]');
+  scenes.forEach((scene) => {
+    scene.classList.add('scene');
+    const fx = document.createElement('div');
+    fx.className = 'candle-fx';
+    fx.setAttribute('aria-hidden', 'true');
+    fx.innerHTML = '<span class="candle-fx__dim"></span><span class="candle-fx__glow"></span><span class="candle-fx__smoke"></span><span class="candle-fx__flame"><i></i></span>';
+    scene.appendChild(fx);
   });
-  placeAllFlames();
+  function layoutScene(scene) {
+    const [wx, wy] = scene.dataset.wick.split(',').map(Number);
+    const p = mapPoint(scene, $('img', scene), wx, wy);
+    if (!p) return;
+    scene.style.setProperty('--wx', `${p.x}%`);
+    scene.style.setProperty('--wy', `${p.y}%`);
+    scene.style.setProperty('--fw', `${((parseFloat(scene.dataset.flame) || 5) / 100) * p.dw}px`);
+  }
+  function setBurning(scene, on) {
+    if (on) {
+      layoutScene(scene);
+      scene.classList.remove('is-snuffed');
+      scene.classList.add('is-burning');
+    } else if (scene.classList.contains('is-burning')) {
+      scene.classList.remove('is-burning');
+      scene.classList.add('is-snuffed');
+      setTimeout(() => scene.classList.remove('is-snuffed'), 2700);
+    }
+  }
+  function lightButton(label) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'g-btn g-light';
+    b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = `${ICON.flame}<span>${label}</span>`;
+    return b;
+  }
+  function setLightButton(btn, on) {
+    btn.classList.toggle('is-on', on);
+    btn.setAttribute('aria-pressed', String(on));
+    btn.setAttribute('aria-label', on ? 'Apagar a vela' : 'Acender a vela');
+    $('span', btn).textContent = on ? 'Apagar' : 'Acender a vela';
+  }
+
+  const layoutAll = () => {
+    $$('.flame').forEach(placeFlame);
+    scenes.forEach(layoutScene);
+  };
+  $$('img').forEach((img) => { if (!img.complete) img.addEventListener('load', layoutAll, { once: true }); });
+  layoutAll();
 
   /* ==========================================================
      HERO · a luz acompanha quem visita
@@ -57,13 +118,13 @@
   const heroMedia = $('.hero__media');
   const heroImg = $('.hero__img--base');
   const heroFlame = $('.flame--hero');
+  let igniteAt = 0;
 
   function ignite() {
     if (body.classList.contains('is-lit')) return;
     setTimeout(() => body.classList.add('is-lit'), 60);
     igniteAt = performance.now();
   }
-  let igniteAt = 0;
   if (heroImg.complete) ignite();
   else {
     heroImg.addEventListener('load', ignite, { once: true });
@@ -74,7 +135,9 @@
     let heroRect = hero.getBoundingClientRect();
     let mediaRect = heroMedia.getBoundingClientRect();
     let pointerActive = false;
+    let releaseTimer = null;
     let tx = 0, ty = 0, cx = -999, cy = -999;
+    let tiltX = 0, tiltY = 0, hasTilt = false;
     let travelled = 0, lastX = null, lastY = null;
     let running = false, heroVisible = true;
 
@@ -92,25 +155,44 @@
       };
     };
 
-    const onMove = (e) => {
-      tx = e.clientX - heroRect.left;
-      ty = e.clientY - heroRect.top;
+    const follow = (clientX, clientY) => {
+      tx = clientX - heroRect.left;
+      ty = clientY - heroRect.top;
+      clearTimeout(releaseTimer);
       if (!pointerActive) {
         pointerActive = true;
         hero.classList.add('has-pointer');
         if (cx < -900) { cx = tx; cy = ty; }
       }
-      if (lastX !== null) travelled += Math.hypot(e.clientX - lastX, e.clientY - lastY);
-      lastX = e.clientX; lastY = e.clientY;
+      if (lastX !== null) travelled += Math.hypot(clientX - lastX, clientY - lastY);
+      lastX = clientX; lastY = clientY;
       if (travelled > 160) hero.classList.add('hint-done');
     };
+    const release = (delay) => {
+      clearTimeout(releaseTimer);
+      releaseTimer = setTimeout(() => {
+        pointerActive = false;
+        lastX = null;
+        hero.classList.remove('has-pointer');
+      }, delay);
+    };
 
-    hero.addEventListener('pointermove', onMove, { passive: true });
-    hero.addEventListener('pointerdown', onMove, { passive: true });
-    hero.addEventListener('pointerleave', () => {
-      pointerActive = false;
-      hero.classList.remove('has-pointer');
-    });
+    hero.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') follow(e.clientX, e.clientY); }, { passive: true });
+    hero.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') release(0); });
+    // no toque, a luz segue o dedo e volta devagar para a vela
+    hero.addEventListener('touchstart', (e) => { const t = e.touches[0]; measure(); follow(t.clientX, t.clientY); }, { passive: true });
+    hero.addEventListener('touchmove', (e) => { const t = e.touches[0]; follow(t.clientX, t.clientY); }, { passive: true });
+    hero.addEventListener('touchend', () => release(1400), { passive: true });
+
+    // inclinar o celular move a luz (onde o navegador permite sem pedir autorização)
+    if ('DeviceOrientationEvent' in window && typeof DeviceOrientationEvent.requestPermission !== 'function') {
+      window.addEventListener('deviceorientation', (e) => {
+        if (e.gamma === null || e.beta === null) return;
+        hasTilt = true;
+        tiltX = clamp(e.gamma / 30, -1, 1);
+        tiltY = clamp((e.beta - 45) / 30, -1, 1);
+      }, { passive: true });
+    }
 
     const frame = (now) => {
       if (!heroVisible || document.hidden) { running = false; return; }
@@ -118,15 +200,20 @@
       const c = candleCenter();
       if (cx < -900) { cx = c.x; cy = c.y; }
 
-      // Sem cursor, a luz respira devagar ao redor da vela
-      const gx = pointerActive ? tx : c.x + Math.sin(t * 0.45) * mediaRect.width * 0.22;
-      const gy = pointerActive ? ty : c.y + Math.cos(t * 0.33) * mediaRect.height * 0.16;
-      cx += (gx - cx) * (pointerActive ? 0.09 : 0.03);
-      cy += (gy - cy) * (pointerActive ? 0.09 : 0.03);
+      let gx, gy;
+      if (pointerActive) { gx = tx; gy = ty; }
+      else {
+        const drift = hasTilt ? 0.08 : 0.22;
+        gx = c.x + Math.sin(t * 0.45) * mediaRect.width * drift + tiltX * mediaRect.width * 0.32;
+        gy = c.y + Math.cos(t * 0.33) * mediaRect.height * drift * 0.7 + tiltY * mediaRect.height * 0.22;
+      }
+      const ease = pointerActive ? 0.09 : 0.035;
+      cx += (gx - cx) * ease;
+      cy += (gy - cy) * ease;
 
       const flicker = 1 + 0.035 * Math.sin(t * 13.1) + 0.025 * Math.sin(t * 7.3 + 1.3) + 0.02 * Math.sin(t * 23.7 + 0.4);
       const grow = igniteAt ? smooth(0, 2600, now - igniteAt) : 0;
-      const base = Math.min(window.innerWidth, window.innerHeight) * 0.3;
+      const base = Math.min(window.innerWidth, window.innerHeight) * (mqMobile.matches ? 0.42 : 0.3);
       const r = base * flicker * grow;
 
       hero.style.setProperty('--gx', `${cx}px`);
@@ -147,6 +234,26 @@
     window.addEventListener('scroll', measure, { passive: true });
     start();
   }
+
+  /* ==========================================================
+     TÍTULOS · palavras sobem uma a uma
+     ========================================================== */
+  $$('.h2, .h3, .product__name').forEach((el) => {
+    if (el.children.length) return;
+    const words = el.textContent.trim().split(/\s+/);
+    el.textContent = '';
+    words.forEach((w, i) => {
+      const outer = document.createElement('span');
+      outer.className = 'word';
+      const inner = document.createElement('span');
+      inner.textContent = w;
+      inner.style.setProperty('--i', i);
+      outer.appendChild(inner);
+      el.appendChild(outer);
+      if (i < words.length - 1) el.appendChild(document.createTextNode(' '));
+    });
+    el.classList.add('split');
+  });
 
   /* ==========================================================
      MANIFESTO · palavras acendem, depois amanhece
@@ -171,6 +278,7 @@
   function updateManifesto() {
     if (!manifesto || reduced) return;
     const rect = manifesto.getBoundingClientRect();
+    if (rect.bottom < -50 || rect.top > window.innerHeight + 50) return;
     const total = rect.height - window.innerHeight;
     const p = clamp(-rect.top / total, 0, 1);
     const lit = Math.round(smooth(0.02, 0.52, p) * words.length);
@@ -178,6 +286,25 @@
     dawn = smooth(0.56, 0.8, p);
     manifesto.style.setProperty('--dawn', dawn.toFixed(3));
     manifesto.style.setProperty('--fade', smooth(0.6, 0.78, p).toFixed(3));
+  }
+
+  /* ---------- Hero se aproxima ao rolar ---------- */
+  let lastHp = -1;
+  function updateHeroDepth() {
+    if (reduced) return;
+    const hp = clamp(window.scrollY / hero.offsetHeight, 0, 1);
+    if (Math.abs(hp - lastHp) < 0.002) return;
+    lastHp = hp;
+    hero.style.setProperty('--hp', hp.toFixed(3));
+  }
+
+  /* ---------- Brasa de progresso ---------- */
+  const progress = $('.progress');
+  function updateProgress() {
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    const sp = max > 0 ? clamp(window.scrollY / max, 0, 1) : 0;
+    progress.style.setProperty('--sp', sp.toFixed(4));
+    progress.classList.toggle('is-on', window.scrollY > hero.offsetHeight * 0.6);
   }
 
   /* ==========================================================
@@ -224,11 +351,12 @@
     toggle.setAttribute('aria-label', open ? 'Fechar menu' : 'Abrir menu');
     if (open) {
       menu.hidden = false;
-      requestAnimationFrame(() => menu.classList.add('is-open'));
-      body.style.overflow = 'hidden';
+      requestAnimationFrame(() => requestAnimationFrame(() => menu.classList.add('is-open')));
+      root.style.overflow = 'hidden';
+      nav.classList.remove('is-hidden');
     } else {
       menu.classList.remove('is-open');
-      body.style.overflow = '';
+      root.style.overflow = '';
       setTimeout(() => { if (toggle.getAttribute('aria-expanded') === 'false') menu.hidden = true; }, 500);
     }
     updateNav();
@@ -236,19 +364,27 @@
   toggle.addEventListener('click', () => setMenu(toggle.getAttribute('aria-expanded') !== 'true'));
   $$('a', menu).forEach((a) => a.addEventListener('click', () => setMenu(false)));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && toggle.getAttribute('aria-expanded') === 'true') { setMenu(false); toggle.focus(); } });
+  mqMobile.addEventListener('change', () => { if (!mqMobile.matches && toggle.getAttribute('aria-expanded') === 'true') setMenu(false); });
 
-  /* ---------- Botão flutuante ---------- */
+  /* ---------- Botão flutuante e barra da encomenda ---------- */
   const floatWa = $('.float-wa');
   const contact = $('#contato');
   const orderSection = $('#encomende');
+  const orderBar = $('.order-bar');
+  const previewCard = $('.preview-card');
   function updateFloat() {
     const vh = window.innerHeight;
     const pastHero = window.scrollY > hero.offsetHeight * 0.85;
     const inContact = contact.getBoundingClientRect().top < vh * 0.7;
-    // a encomenda já tem o próprio botão de WhatsApp
     const o = orderSection.getBoundingClientRect();
     const inOrder = o.top < vh * 0.6 && o.bottom > vh * 0.4;
     floatWa.classList.toggle('is-visible', pastHero && !inContact && !inOrder);
+
+    // no celular, a encomenda ganha uma barra com o resumo enquanto a prévia não está na tela
+    const pr = previewCard.getBoundingClientRect();
+    const previewOnScreen = pr.top < vh - 90 && pr.bottom > 90;
+    const formOnScreen = o.top < vh * 0.55 && o.bottom > vh * 0.75;
+    orderBar.classList.toggle('is-visible', mqMobile.matches && formOnScreen && !previewOnScreen);
   }
 
   /* ---------- Passo a passo: a linha se preenche ao rolar ---------- */
@@ -263,7 +399,8 @@
   function updateProcess() {
     if (!process) return;
     const r = $('.process__steps', process).getBoundingClientRect();
-    const p = reduced ? 1 : clamp((window.innerHeight * 0.8 - r.top) / (window.innerHeight * 0.45), 0, 1);
+    const span = mqMobile.matches ? r.height : window.innerHeight * 0.45;
+    const p = reduced ? 1 : clamp((window.innerHeight * 0.8 - r.top) / span, 0, 1);
     process.style.setProperty('--progress', p.toFixed(3));
     steps.forEach((li, i) => li.classList.toggle('is-reached', p >= i / (steps.length - 1) - 0.001));
   }
@@ -283,17 +420,19 @@
     if (ticking) return;
     ticking = true;
     requestAnimationFrame(() => {
+      updateHeroDepth();
       updateManifesto();
       updateNav();
       updateFloat();
       updateProcess();
       updateSeal();
+      updateProgress();
       ticking = false;
     });
   }
   window.addEventListener('scroll', onScroll, { passive: true });
-  window.addEventListener('resize', () => { measureProcess(); placeAllFlames(); onScroll(); });
-  window.addEventListener('load', () => { measureProcess(); placeAllFlames(); onScroll(); });
+  window.addEventListener('resize', () => { measureProcess(); layoutAll(); onScroll(); });
+  window.addEventListener('load', () => { measureProcess(); layoutAll(); onScroll(); });
   measureProcess();
   onScroll();
 
@@ -316,37 +455,194 @@
   }
 
   /* ==========================================================
+     LIGHTBOX
+     ========================================================== */
+  const lightbox = document.createElement('dialog');
+  lightbox.className = 'lightbox';
+  lightbox.setAttribute('aria-label', 'Fotos ampliadas');
+  lightbox.innerHTML = `
+    <div class="lightbox__bar">
+      <p class="lightbox__title"></p>
+      <p class="lightbox__count" aria-live="polite"></p>
+      <button type="button" class="lightbox__close" aria-label="Fechar">×</button>
+    </div>
+    <div class="lightbox__track"></div>
+    <button type="button" class="lightbox__arrow lightbox__arrow--prev" aria-label="Foto anterior">←</button>
+    <button type="button" class="lightbox__arrow lightbox__arrow--next" aria-label="Próxima foto">→</button>`;
+  body.appendChild(lightbox);
+  const lbTrack = $('.lightbox__track', lightbox);
+  const lbCount = $('.lightbox__count', lightbox);
+  const lbTitle = $('.lightbox__title', lightbox);
+  let lbTotal = 0, lbReturn = null;
+
+  const largest = (img) => {
+    const set = img.getAttribute('srcset');
+    if (!set) return img.currentSrc || img.src;
+    const items = set.split(',').map((s) => s.trim().split(/\s+/));
+    items.sort((a, b) => parseInt(b[1], 10) - parseInt(a[1], 10));
+    return items[0][0];
+  };
+  const lbIndex = () => Math.round(lbTrack.scrollLeft / Math.max(1, lbTrack.clientWidth));
+  const lbUpdate = () => { lbCount.textContent = `${lbIndex() + 1} / ${lbTotal}`; };
+  const lbGo = (i, smoothScroll = true) => {
+    lbTrack.scrollTo({ left: clamp(i, 0, lbTotal - 1) * lbTrack.clientWidth, behavior: smoothScroll && !reduced ? 'smooth' : 'auto' });
+  };
+
+  function openLightbox(imgs, index, title, trigger) {
+    lbTrack.innerHTML = '';
+    imgs.forEach((img) => {
+      const slide = document.createElement('figure');
+      slide.className = 'lightbox__slide';
+      const big = document.createElement('img');
+      big.src = largest(img);
+      big.alt = img.alt;
+      big.decoding = 'async';
+      slide.appendChild(big);
+      lbTrack.appendChild(slide);
+    });
+    lbTotal = imgs.length;
+    lbTitle.textContent = title || '';
+    lbReturn = trigger || null;
+    lightbox.showModal();
+    root.style.overflow = 'hidden';
+    requestAnimationFrame(() => { lbGo(index, false); lbUpdate(); });
+  }
+  lbTrack.addEventListener('scroll', lbUpdate, { passive: true });
+  $('.lightbox__close', lightbox).addEventListener('click', () => lightbox.close());
+  $('.lightbox__arrow--prev', lightbox).addEventListener('click', () => lbGo(lbIndex() - 1));
+  $('.lightbox__arrow--next', lightbox).addEventListener('click', () => lbGo(lbIndex() + 1));
+  lightbox.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') { lbGo(lbIndex() - 1); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { lbGo(lbIndex() + 1); e.preventDefault(); }
+  });
+  lbTrack.addEventListener('click', (e) => { if (e.target.classList.contains('lightbox__slide')) lightbox.close(); });
+  lightbox.addEventListener('close', () => {
+    root.style.overflow = '';
+    if (lbReturn) lbReturn.focus({ preventScroll: true });
+  });
+
+  /* ==========================================================
      GALERIAS
      ========================================================== */
   $$('[data-gallery]').forEach((g) => {
+    const stage = $('.gallery__stage', g);
     const shots = $$('.shot', g);
     const thumbs = $$('.thumb', g);
-    const stage = $('.gallery__stage', g);
+    const title = $('.product__name', g.closest('.product'))?.textContent.trim() || '';
     let index = 0;
 
-    const go = (n, silent) => {
+    // as fotos empilhadas carregam todas quando a galeria se aproxima da tela
+    new IntersectionObserver(([en], obs) => {
+      if (!en.isIntersecting) return;
+      shots.forEach((s) => { $('img', s).loading = 'eager'; });
+      obs.disconnect();
+    }, { rootMargin: '800px 0px' }).observe(g);
+
+    // moldura com os controles por cima da foto
+    const frame = document.createElement('div');
+    frame.className = 'gallery__frame';
+    stage.parentNode.insertBefore(frame, stage);
+    frame.appendChild(stage);
+
+    const zoom = document.createElement('button');
+    zoom.type = 'button';
+    zoom.className = 'g-btn g-zoom';
+    zoom.setAttribute('aria-label', `Ampliar fotos da vela ${title}`);
+    zoom.innerHTML = ICON.expand;
+    frame.appendChild(zoom);
+
+    if (shots.length > 1) {
+      const prev = document.createElement('button');
+      prev.type = 'button'; prev.className = 'g-btn g-arrow g-prev'; prev.setAttribute('aria-label', 'Foto anterior'); prev.innerHTML = ICON.prev;
+      const next = document.createElement('button');
+      next.type = 'button'; next.className = 'g-btn g-arrow g-next'; next.setAttribute('aria-label', 'Próxima foto'); next.innerHTML = ICON.next;
+      frame.append(prev, next);
+      prev.addEventListener('click', () => go(index - 1));
+      next.addEventListener('click', () => go(index + 1));
+    }
+
+    const setActive = (n, silent) => {
       index = (n + shots.length) % shots.length;
       shots.forEach((s, k) => s.classList.toggle('is-active', k === index));
       thumbs.forEach((t, k) => {
         t.classList.toggle('is-active', k === index);
         t.setAttribute('aria-pressed', String(k === index));
       });
+      if (lightBtn) lightBtn.hidden = !shots[index].hasAttribute('data-wick');
       if (!silent) g.dispatchEvent(new CustomEvent('gallery:change', { detail: { shot: shots[index] } }));
+    };
+    const go = (n, silent) => {
+      const target = (n + shots.length) % shots.length;
+      if (mqMobile.matches) {
+        stage.scrollTo({ left: target * stage.clientWidth, behavior: reduced ? 'auto' : 'smooth' });
+        if (silent) setActive(target, true);
+      } else {
+        setActive(target, silent);
+      }
     };
     g.galleryGo = go;
     thumbs.forEach((t, k) => t.addEventListener('click', () => go(k)));
 
-    // deslizar com o dedo
-    let startX = null, startY = null;
-    stage.addEventListener('pointerdown', (e) => { startX = e.clientX; startY = e.clientY; });
+    // celular: o índice acompanha o deslizar nativo
+    let scrollTick = false;
+    stage.addEventListener('scroll', () => {
+      if (!mqMobile.matches || scrollTick) return;
+      scrollTick = true;
+      requestAnimationFrame(() => {
+        const n = Math.round(stage.scrollLeft / Math.max(1, stage.clientWidth));
+        if (n !== index) setActive(n);
+        scrollTick = false;
+      });
+    }, { passive: true });
+    mqMobile.addEventListener('change', () => {
+      if (mqMobile.matches) stage.scrollLeft = index * stage.clientWidth;
+      else stage.scrollLeft = 0;
+      layoutAll();
+    });
+
+    // computador e tablet: arrastar troca a foto, clique amplia
+    let startX = null, startY = null, swiped = false;
+    stage.addEventListener('pointerdown', (e) => { startX = e.clientX; startY = e.clientY; swiped = false; });
     stage.addEventListener('pointerup', (e) => {
-      if (startX === null) return;
+      if (startX === null || mqMobile.matches) return;
       const dx = e.clientX - startX, dy = e.clientY - startY;
-      if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) go(index + (dx < 0 ? 1 : -1));
-      else if (e.pointerType === 'mouse' && Math.abs(dx) < 6) go(index + 1);
+      if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) { go(index + (dx < 0 ? 1 : -1)); swiped = true; }
       startX = null;
     });
-    stage.style.cursor = shots.length > 1 ? 'pointer' : '';
+    const openHere = () => openLightbox(shots.map((s) => $('img', s)), index, title, zoom);
+    stage.addEventListener('click', () => { if (!swiped) openHere(); });
+    zoom.addEventListener('click', openHere);
+    frame.addEventListener('keydown', (e) => {
+      if (e.target.closest('.thumb, .g-btn') === null) return;
+      if (e.key === 'ArrowLeft') go(index - 1);
+      if (e.key === 'ArrowRight') go(index + 1);
+    });
+
+    // acender a vela (só nas galerias com velas apagadas)
+    let lightBtn = null;
+    const wickShots = shots.filter((s) => s.hasAttribute('data-wick'));
+    if (wickShots.length) {
+      lightBtn = lightButton('Acender a vela');
+      setLightButton(lightBtn, false);
+      frame.appendChild(lightBtn);
+      let lit = false;
+      lightBtn.addEventListener('click', () => {
+        lit = !lit;
+        setLightButton(lightBtn, lit);
+        wickShots.forEach((s) => setBurning(s, lit));
+        if (lit) buzz(12);
+      });
+      // um convite discreto na primeira vez que a galeria aparece
+      new IntersectionObserver(([en], obs) => {
+        if (!en.isIntersecting) return;
+        setTimeout(() => {
+          lightBtn.classList.add('is-hinting');
+          setTimeout(() => lightBtn.classList.remove('is-hinting'), 4000);
+        }, 1200);
+        obs.disconnect();
+      }, { threshold: 0.6 }).observe(frame);
+    }
+    setActive(0, true);
   });
 
   /* ---------- Duração da queima em noites ---------- */
@@ -400,19 +696,30 @@
       const size = e.detail.shot.dataset.size;
       if (size) setSize(size, true);
     });
-    setSize('pequena');
+    setSize('pequena', true);
   }
 
   /* ==========================================================
      CARTA DE AROMAS
      ========================================================== */
   const aromasSection = $('#aromas');
-  $$('.family').forEach((fam) => {
+  const families = $$('.family');
+  let hovering = false;
+  families.forEach((fam) => {
     const key = fam.dataset.familyKey;
-    const set = () => { aromasSection.dataset.family = key; };
-    fam.addEventListener('pointerenter', set);
-    fam.addEventListener('focusin', set);
+    fam.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') { hovering = true; aromasSection.dataset.family = key; } });
+    fam.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') hovering = false; });
+    fam.addEventListener('focusin', () => { aromasSection.dataset.family = key; });
   });
+  // ao rolar, a família no centro da tela tinge o ambiente (essencial no celular)
+  if ('IntersectionObserver' in window) {
+    const famIo = new IntersectionObserver((entries) => {
+      entries.forEach((e) => {
+        if (e.isIntersecting && !hovering) aromasSection.dataset.family = e.target.dataset.familyKey;
+      });
+    }, { rootMargin: '-45% 0px -45% 0px' });
+    families.forEach((f) => famIo.observe(f));
+  }
 
   /* ==========================================================
      ENCOMENDE · monta a mensagem
@@ -436,6 +743,7 @@
     pick.addEventListener('click', () => {
       input.checked = true;
       $$('.aroma').forEach((x) => x.classList.toggle('is-picked', x === li));
+      buzz(8);
       updateOrder();
       goToOrder();
     });
@@ -451,10 +759,13 @@
   const previewImg = $('[data-preview-img]');
   const previewFlame = $('[data-preview-flame]');
   const previewMsg = $('[data-preview-msg]');
-  const orderWa = $('[data-order-wa]');
+  const orderWaLinks = $$('[data-order-wa]');
   const orderMail = $('[data-order-mail]');
+  const orderSum = $('[data-order-sum]');
   const qty = $('#qty');
   let currentModel = null;
+  let lastText = '';
+  let labelLine = '';
 
   function composeMessage() {
     const data = new FormData(form);
@@ -463,7 +774,7 @@
     const occasion = data.get('occasion') || '';
     const n = clamp(parseInt(data.get('qty'), 10) || 1, 1, 9999);
     const custom = form.elements.custom.checked;
-    const details = (data.get('details') || '').trim();
+    const notes = (data.get('details') || '').trim();
 
     const lines = ['Olá, Ma&Ma!'];
     let s;
@@ -474,9 +785,15 @@
     s += occasion ? `, ${occasion}.` : '.';
     lines.push(s);
     if (!aroma) lines.push('Ainda estou escolhendo o aroma.');
-    if (custom) lines.push(n === 1 ? 'Quero personalizar a vela com nome, data ou mensagem.' : 'Quero personalizar as velas com nome, data ou mensagem.');
-    if (details) lines.push(`Sobre o momento: ${details}`);
-    return { text: lines.join('\n'), model };
+    if (custom && labelLine) lines.push(labelLine);
+    else if (custom) lines.push(n === 1 ? 'Quero personalizar a vela com nome, data ou mensagem.' : 'Quero personalizar as velas com nome, data ou mensagem.');
+    if (notes) lines.push(`Sobre o momento: ${notes}`);
+
+    const occLabel = $('input[name="occasion"]:checked + span', form)?.textContent || '';
+    const summary = [model || 'Vela a escolher', aroma === 'sob encomenda' ? 'Outro aroma' : (aroma || 'Aroma a escolher'), occLabel]
+      .concat(n > 1 ? [`${n} un.`] : [])
+      .join(' · ');
+    return { text: lines.join('\n'), model, summary };
   }
 
   function updatePreviewImage(model) {
@@ -505,22 +822,31 @@
   }
 
   function updateOrder() {
-    const { text, model } = composeMessage();
+    const { text, model, summary } = composeMessage();
     previewMsg.textContent = text;
-    orderWa.href = waLink(text);
+    if (lastText && text !== lastText && !reduced) {
+      previewMsg.classList.remove('is-updated');
+      void previewMsg.offsetWidth;
+      previewMsg.classList.add('is-updated');
+    }
+    lastText = text;
+    orderWaLinks.forEach((a) => { a.href = waLink(text); });
     orderMail.href = `mailto:${EMAIL}?subject=${encodeURIComponent('Encomenda Ma&Ma Atelier')}&body=${encodeURIComponent(text)}`;
+    orderSum.textContent = summary;
     updatePreviewImage(model);
   }
 
   form.addEventListener('input', updateOrder);
-  form.addEventListener('change', updateOrder);
+  form.addEventListener('change', (e) => { if (e.target.type === 'radio') buzz(6); updateOrder(); });
   form.addEventListener('submit', (e) => e.preventDefault());
 
   $$('[data-step]').forEach((b) => b.addEventListener('click', () => {
     qty.value = clamp((parseInt(qty.value, 10) || 1) + Number(b.dataset.step), 1, 9999);
+    buzz(6);
     updateOrder();
   }));
   qty.addEventListener('blur', () => { qty.value = clamp(parseInt(qty.value, 10) || 1, 1, 9999); updateOrder(); });
+  orderSum.addEventListener('click', () => previewCard.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'center' }));
 
   function goToOrder() {
     $('#encomende').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
@@ -537,4 +863,62 @@
   }));
 
   updateOrder();
+
+  /* ==========================================================
+     PRÉVIA DA PERSONALIZAÇÃO
+     ========================================================== */
+  const labelForm = $('#label-form');
+  if (labelForm) {
+    const outs = {};
+    $$('[data-label-out]').forEach((el) => { outs[el.dataset.labelOut] = el; });
+    const labelEl = $('.label');
+    const fields = ['names', 'date', 'phrase'];
+
+    const renderLabel = () => {
+      fields.forEach((f) => {
+        const input = labelForm.elements[f];
+        const value = input.value.trim() || input.placeholder;
+        outs[f].textContent = value;
+      });
+      const len = outs.names.textContent.length;
+      labelEl.style.setProperty('--names-size', `${clamp(172 / (0.8 * Math.max(len, 1)), 5.4, 8.4)}cqw`);
+    };
+    let labelUsed = false;
+    const buildLabelLine = () => {
+      const v = Object.fromEntries(fields.map((f) => [f, labelForm.elements[f].value.trim()]));
+      const parts = [];
+      if (v.names) parts.push(`nomes ${v.names}`);
+      if (v.date) parts.push(`data ${v.date}`);
+      if (v.phrase) parts.push(`frase "${v.phrase}"`);
+      labelLine = parts.length ? `Quero personalizar com ${parts.join(', ')}.` : '';
+    };
+    labelForm.addEventListener('input', () => {
+      renderLabel();
+      // depois de levada para a encomenda, a mensagem acompanha cada ajuste
+      if (labelUsed) { buildLabelLine(); updateOrder(); }
+    });
+    labelForm.addEventListener('submit', (e) => e.preventDefault());
+    renderLabel();
+
+    $('[data-label-use]').addEventListener('click', () => {
+      labelUsed = true;
+      form.elements.custom.checked = true;
+      buildLabelLine();
+      buzz(10);
+      updateOrder();
+    });
+
+    // a vela da prévia também acende
+    const labelPhoto = $('.label-photo');
+    const lb = lightButton('Acender a vela');
+    setLightButton(lb, false);
+    labelPhoto.appendChild(lb);
+    let labelLit = false;
+    lb.addEventListener('click', () => {
+      labelLit = !labelLit;
+      setLightButton(lb, labelLit);
+      setBurning(labelPhoto, labelLit);
+      if (labelLit) buzz(12);
+    });
+  }
 })();
