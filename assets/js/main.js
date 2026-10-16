@@ -10,10 +10,15 @@
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
   const waLink = (msg) => `https://wa.me/${WHATSAPP}?text=${encodeURIComponent(msg)}`;
-  const buzz = (ms) => { if (navigator.vibrate) { try { navigator.vibrate(ms); } catch (e) { /* sem vibração */ } } };
+  const buzz = (ms) => {
+    // o navegador só permite vibrar depois de um primeiro toque na página
+    if (!navigator.vibrate || (navigator.userActivation && !navigator.userActivation.hasBeenActive)) return;
+    try { navigator.vibrate(ms); } catch (e) { /* sem vibração */ }
+  };
 
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const mqMobile = window.matchMedia('(max-width: 900px)');
+  const touchUI = window.matchMedia('(hover: none)');
   const body = document.body;
   const root = document.documentElement;
 
@@ -60,34 +65,450 @@
     flame.style.setProperty('--fy', `${p.y}%`);
   }
 
+  /* ==========================================================
+     CHAMA · fogo e pavio desenhados quadro a quadro
+     ========================================================== */
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const easeOut = (t) => 1 - (1 - t) ** 3;
+  const rgb = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',');
+  const CREAM = [239, 230, 210], CHARRED = [26, 18, 13], WAXY = [92, 72, 56];
+
+  // ruído suave: valores aleatórios nos inteiros, interpolados entre eles
+  function makeNoise() {
+    const v = new Float32Array(256);
+    for (let i = 0; i < 256; i++) v[i] = Math.random() * 2 - 1;
+    return (x) => {
+      const i = Math.floor(x), f = x - i, a = v[i & 255];
+      return a + (v[(i + 1) & 255] - a) * f * f * (3 - 2 * f);
+    };
+  }
+
+  // perfil da gota: pé arredondado, mais larga no primeiro terço, ponta fina
+  const profile = (u) => Math.pow(Math.sin(Math.PI * Math.pow(clamp(u, 0, 1), 0.6)), 0.8);
+
+  // um só laço de animação para todas as chamas acesas e visíveis
+  const activeFlames = new Set();
+  let flameLoop = false;
+  function flameTick(now) {
+    if (!activeFlames.size) { flameLoop = false; return; }
+    requestAnimationFrame(flameTick);
+    activeFlames.forEach((f) => f.frame(now / 1000));
+  }
+  function wakeFlame(f) {
+    activeFlames.add(f);
+    if (!flameLoop) { flameLoop = true; requestAnimationFrame(flameTick); }
+  }
+
+  function createFlame(scene, canvas) {
+    const ctx = canvas.getContext('2d');
+    const top = scene.dataset.view === 'top';
+    const n = makeNoise();
+    const clock = () => performance.now() / 1000;
+    let W = 0, ox = 0, oy = 0, dpr = 1, sizeKey = '';
+    // pavio da foto em unidades da largura da chama, com a ponta na origem
+    let wick = { base: [0, 0.3], bend: null, w: 0.2 }, wickLen = 0.3, curl = 1;
+    let state = 'off', litAt = 0, outAt = 0, char = 0, charFrom = 0, quick = false;
+    let visible = !('IntersectionObserver' in window);
+    let size = 0, lit = 0, sway = 0, outSize = 0, outLit = 0, outSway = 0;
+    let lean = 0, leanV = 0, stretch = 0, stretchV = 0;
+    let lastT = 0, lastX = null, lastY = null, lastLit = -1, lastGlow = -1;
+    let gustAt = -9, gustDir = 1, nextGust = 0;
+    let smoke = [], lastEmit = 0;
+
+    // a chama reage ao movimento: deslizar a galeria deixa a ponta para trás, rolar estica ou achata
+    function physics(dt) {
+      const r = scene.getBoundingClientRect();
+      let vx = 0, vy = 0;
+      if (lastX !== null) { vx = (r.left - lastX) / dt; vy = (r.top - lastY) / dt; }
+      lastX = r.left; lastY = r.top;
+      leanV += ((clamp(-vx / 1400, -0.7, 0.7) - lean) * 70 - leanV * 9) * dt;
+      lean += leanV * dt;
+      stretchV += ((clamp(vy / 2600, -0.18, 0.18) - stretch) * 60 - stretchV * 10) * dt;
+      stretch += stretchV * dt;
+    }
+
+    // contorno da gota entre as alturas s0 e s1 (0 = pé, 1 = ponta)
+    function drop(f, s0, s1, k) {
+      const N = 26;
+      ctx.beginPath();
+      for (let i = 0; i <= N; i++) {
+        const u = i / N, s = lerp(s0, s1, u);
+        ctx.lineTo(f.sw * 0.35 * f.H * s ** 1.8 - f.R * k * profile(u), f.ay - s * f.H);
+      }
+      for (let i = N; i >= 0; i--) {
+        const u = i / N, s = lerp(s0, s1, u);
+        ctx.lineTo(f.sw * 0.35 * f.H * s ** 1.8 + f.R * k * profile(u), f.ay - s * f.H);
+      }
+      ctx.closePath();
+    }
+    function ellipseFill(x, y, rx, ry, stops, alpha = 1) {
+      rx = Math.max(0.1, rx); ry = Math.max(0.1, ry);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(1, ry / rx);
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+      stops.forEach(([o, c]) => g.addColorStop(o, c));
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, rx, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // pavio de algodão: creme na foto, carbonizado da ponta para a base, ponta curvada
+    function drawWick() {
+      if (char <= 0) return null;
+      if (top) {
+        ctx.fillStyle = `rgb(${rgb(CREAM, CHARRED, Math.min(1, char * 3))})`;
+        ctx.beginPath();
+        ctx.arc(0, 0, W * wick.w * 0.58, 0, Math.PI * 2);
+        ctx.fill();
+        return [0, 0];
+      }
+      const bx = wick.base[0] * W, by = wick.base[1] * W;
+      const mid = wick.bend || [wick.base[0] / 2, wick.base[1] / 2];
+      const mx = mid[0] * W, my = mid[1] * W;
+      // queimando, a ponta se curva um pouco mais para o lado em que já pendia
+      const tx = (curl * 0.22 * wickLen * char + sway * 0.03) * W, ty = -0.04 * W * char;
+      const at = (u) => { const v = 1 - u; return [v * v * bx + 2 * v * u * mx + u * u * tx, v * v * by + 2 * v * u * my + u * u * ty]; };
+      // fio de algodão afinando para a ponta, um pouco mais largo que o da foto para cobri-lo
+      const left = [], right = [];
+      for (let i = 0; i <= 10; i++) {
+        const u = i / 10, [x, y] = at(u), [x1, y1] = at(Math.max(0, u - 0.02)), [x2, y2] = at(Math.min(1, u + 0.02));
+        const len = Math.hypot(x2 - x1, y2 - y1) || 1, w = W * wick.w * lerp(0.6, 0.46, u);
+        const nx = -(y2 - y1) / len * w, ny = (x2 - x1) / len * w;
+        left.push([x + nx, y + ny]);
+        right.unshift([x - nx, y - ny]);
+      }
+      const front = 1 - 0.88 * char;
+      const burnt = `rgb(${rgb(CREAM, CHARRED, Math.min(1, char * 3))})`;
+      const g = ctx.createLinearGradient(bx, by, tx, ty);
+      g.addColorStop(0, `rgb(${rgb(CREAM, WAXY, char)})`);
+      g.addColorStop(Math.max(0, front - 0.14), `rgb(${rgb(CREAM, WAXY, char * 0.6)})`);
+      g.addColorStop(front, burnt);
+      g.addColorStop(1, burnt);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      left.concat(right).forEach(([x, y]) => ctx.lineTo(x, y));
+      ctx.closePath();
+      ctx.fill();
+      // a ponta queimada engrossa um pouco, como carvão
+      ctx.fillStyle = burnt;
+      ctx.beginPath();
+      ctx.arc(tx, ty, W * wick.w * 0.5 * Math.min(1, char * 2), 0, Math.PI * 2);
+      ctx.fill();
+      return [tx, ty];
+    }
+
+    // brasa na ponta do pavio: laranja acesa, vermelho escuro quando esfria
+    function drawEmber(t, at, ember) {
+      if (!at || ember < 0.01) return;
+      const cool = state === 'out' ? smooth(0.3, 2.8, t - outAt) : 0;
+      const col = rgb([255, 150, 60], [190, 30, 10], cool);
+      const er = W * (0.1 + 0.06 * ember);
+      ctx.globalCompositeOperation = 'lighter';
+      ellipseFill(at[0], at[1], er, er, [[0, `rgba(${col},${0.95 * ember})`], [1, `rgba(${col},0)`]]);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = `rgba(${col},${ember})`;
+      ctx.beginPath();
+      ctx.arc(at[0], at[1], W * 0.05, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // fio de fumaça: cada partícula nasce na brasa e sobe acelerando; ligadas, formam uma fita que ondula
+    function emitSmoke(t, at) {
+      const to = t - outAt;
+      if (!at || to < 0.06 || to > 3.2) return;
+      if (t - lastEmit > 0.5) lastEmit = t - 0.02;
+      while (lastEmit < t) {
+        lastEmit += 1 / (80 * Math.exp(-to / 1.1) + 6);
+        smoke.push({ b: lastEmit, x: at[0], y: at[1], life: 2.3 + Math.random() * 0.8 });
+      }
+    }
+    function drawSmoke(t) {
+      smoke = smoke.filter((p) => t - p.b < p.life);
+      let prev = null;
+      ctx.lineCap = 'round';
+      smoke.forEach((p) => {
+        const a = Math.max(0, t - p.b), k = a / p.life;
+        const h = W * (0.9 * a + 1.6 * a * a), hn = h / W;
+        let x, y;
+        if (top) {
+          const ang = 2.4 * n(p.b * 0.7 + 101) + a * 1.4, rr = W * (0.15 + 1.3 * a);
+          x = p.x + Math.cos(ang) * rr;
+          y = p.y + Math.sin(ang) * rr * 0.9;
+        } else {
+          x = p.x + W * 0.55 * Math.pow(hn / 6, 1.4) * n(hn * 0.45 - t * 0.5 + 81)
+            + W * 0.12 * (hn / 4) * n(hn * 1.6 - t * 1.3 + 91)
+            + outSway * 0.08 * h;
+          y = p.y - h;
+        }
+        if (prev) {
+          // um véu largo e claro em volta de um fio mais denso: a fumaça se abre ao subir
+          const alpha = (top ? 0.22 : 0.32) * Math.min(1, a / 0.15) * (1 - k) ** 1.6;
+          const width = W * (0.05 + 0.42 * k ** 1.2);
+          ctx.beginPath();
+          ctx.moveTo(prev[0], prev[1]);
+          ctx.lineTo(x, y);
+          ctx.strokeStyle = `rgba(150,146,142,${(alpha * 0.28).toFixed(3)})`;
+          ctx.lineWidth = width * 3.2;
+          ctx.stroke();
+          ctx.strokeStyle = `rgba(132,128,124,${alpha.toFixed(3)})`;
+          ctx.lineWidth = width;
+          ctx.stroke();
+        }
+        prev = [x, y];
+      });
+    }
+
+    function draw(t) {
+      let ember = 0, blue = 0, glow = 1, extra = 0, lift = 0;
+      if (state === 'lit') {
+        // acender: brasa, conta pequena e azulada, cresce com engasgos, passa um pouco e assenta
+        const te = reduced ? 9 : (t - litAt) * (quick ? 1.6 : 1);
+        if (te < 0.12) size = 0.14 * te / 0.12;
+        else if (te < 1.7) {
+          const p = (te - 0.12) / 1.58;
+          size = lerp(0.14, 1.06, easeOut(p)) * (1 - 0.22 * (1 - p) * Math.max(0, n(t * 9 + 51)));
+        } else size = lerp(1.06, 1, smooth(1.7, 2.4, te));
+        lit = smooth(0, 1.6, te);
+        blue = 1 - smooth(0.1, 1.1, te);
+        glow = smooth(0.12, 1, te);
+        char = Math.max(char, lerp(charFrom, 1, smooth(0, 0.9, te)));
+        ember = 0.38 + 0.1 * n(t * 3 + 61);
+      } else if (state === 'out') {
+        // apagar: a chama encolhe, inclina e se solta; a brasa esfria e solta fumaça
+        const to = t - outAt, k = smooth(0, 0.3, to);
+        size = outSize * (1 - k);
+        lit = outLit * (1 - smooth(0, 1.4, to));
+        extra = outSway * k;
+        lift = k * 0.6;
+        ember = (to < 0.12 ? lerp(0.6, 1, to / 0.12) : Math.exp(-(to - 0.12) / 1.1)) * (1 + 0.12 * n(t * 7 + 71));
+        if (to > 4.2) { state = 'off'; smoke = []; }
+      }
+      if (state === 'off') { size = 0; lit = 0; ember = 0; }
+
+      if (state === 'lit' && !reduced && t > nextGust) {
+        gustAt = t; gustDir = Math.random() < 0.5 ? -1 : 1; nextGust = t + 5 + Math.random() * 7;
+      }
+      const tg = t - gustAt;
+      const gust = tg < 2.5 ? Math.sin(Math.min(1, tg / 0.12) * Math.PI / 2) * Math.exp(-tg / 0.45) : 0;
+      sway = 0.1 * n(t * 0.55 + 3) + 0.035 * n(t * 2.3 + 11) + gustDir * 0.22 * gust + 0.05 * gust * n(t * 14 + 7) + lean;
+      const breath = 1 + 0.045 * n(t * 1.1 + 21) + 0.02 * n(t * 5.7 + 31) + 0.008 * n(t * 13 + 41) - 0.1 * gust;
+      const flick = clamp(1 + (breath - 1) * 2.5, 0.75, 1.15);
+      const hf = breath * (1 + stretch);
+      const f = {
+        H: 3.2 * W * size * hf,
+        R: 0.5 * W * (0.35 + 0.65 * size) / Math.sqrt(hf),
+        ay: (Math.min(0.46, 0.8 * wickLen) - lift) * W, // pé da chama: a ponta do pavio fica dentro dela
+        sw: sway + extra,
+      };
+      const cxAt = (s) => f.sw * 0.35 * f.H * s ** 1.8;
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W * 8, W * 16);
+      ctx.translate(ox, oy);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+
+      if (smoke.length) drawSmoke(t);
+
+      if (top) {
+        // vista de cima: a gota vira um disco de luz em volta do pavio
+        const at = drawWick();
+        if (size > 0.01) {
+          const r = 0.55 * W * (0.35 + 0.65 * size) * Math.sqrt(breath);
+          const x = f.sw * 0.12 * W, y = -0.04 * W * size;
+          ellipseFill(x, y, r * 3.2, r * 3.2, [[0, `rgba(255,190,110,${0.3 * size * flick})`], [1, 'rgba(255,150,70,0)']]);
+          ellipseFill(x, y, r, r * 1.1, [[0, '#fffef8'], [0.3, '#fff3c8'], [0.6, 'rgba(255,205,110,0.95)'], [0.85, 'rgba(255,140,50,0.55)'], [1, 'rgba(255,120,40,0)']], 0.5 + 0.5 * glow);
+          ctx.strokeStyle = `rgba(90,130,255,${((0.18 + 0.3 * blue) * size).toFixed(3)})`;
+          ctx.lineWidth = 0.05 * W;
+          ctx.beginPath();
+          ctx.ellipse(x, y, r * 0.9, r * 0.98, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        if (state === 'out') { emitSmoke(t, at); drawEmber(t, at, ember); }
+      } else {
+        if (size > 0.01) {
+          // halo curto em volta da chama
+          const hr = W * (0.9 + 1.3 * size);
+          ellipseFill(cxAt(0.35), f.ay - 0.35 * f.H, hr, hr, [[0, `rgba(255,190,110,${0.3 * size * flick})`], [0.45, `rgba(255,160,80,${0.1 * size * flick})`], [1, 'rgba(255,150,70,0)']]);
+          // base azul: a borda de baixo da chama, onde a queima é mais limpa
+          ctx.beginPath();
+          for (let i = 6; i >= 0; i--) { const s = i / 50; ctx.lineTo(cxAt(s) - f.R * 0.92 * profile(s), f.ay - s * f.H); }
+          for (let i = 1; i <= 6; i++) { const s = i / 50; ctx.lineTo(cxAt(s) + f.R * 0.92 * profile(s), f.ay - s * f.H); }
+          const ba = (0.28 + 0.4 * blue) * Math.min(1, size * 3);
+          const bg = ctx.createLinearGradient(0, f.ay, 0, f.ay - 0.12 * f.H);
+          bg.addColorStop(0, `rgba(70,112,255,${ba.toFixed(3)})`);
+          bg.addColorStop(1, 'rgba(70,112,255,0)');
+          ctx.strokeStyle = bg;
+          ctx.lineWidth = 0.08 * W * (0.6 + 0.4 * size);
+          ctx.lineCap = 'round';
+          ctx.stroke();
+          // manto: translúcido no pé, amarelo‑âmbar no corpo, borda laranja fina, ponta que se desfaz
+          const mg = ctx.createLinearGradient(0, f.ay, 0, f.ay - f.H);
+          mg.addColorStop(0, 'rgba(255,150,60,0)');
+          mg.addColorStop(0.08, 'rgba(255,170,70,0.5)');
+          mg.addColorStop(0.25, 'rgba(255,198,98,0.95)');
+          mg.addColorStop(0.6, 'rgba(255,186,82,0.9)');
+          mg.addColorStop(0.86, 'rgba(255,142,52,0.55)');
+          mg.addColorStop(1, 'rgba(255,112,36,0)');
+          ctx.fillStyle = mg;
+          [[1.12, 1.04, 0.1], [1, 1, 0.32], [0.88, 0.96, 0.62]].forEach(([rk, hk, a]) => {
+            drop(f, 0, hk, rk);
+            ctx.globalAlpha = a * (0.45 + 0.55 * glow);
+            ctx.fill();
+          });
+          ctx.globalAlpha = 1;
+          // zona escura em volta do pavio, onde a cera ainda é vapor
+          ellipseFill(cxAt(0.08), f.ay - 0.08 * f.H, f.R * 0.42, 0.11 * f.H, [[0, `rgba(150,70,28,${0.4 * glow})`], [1, 'rgba(150,70,28,0)']]);
+        }
+        const at = drawWick();
+        if (size > 0.04) {
+          // zona luminosa: quase branca logo acima do pavio, amarela para cima
+          drop(f, 0.13, 0.9, 0.82);
+          ctx.fillStyle = `rgba(255,218,136,${(0.4 * glow).toFixed(3)})`;
+          ctx.fill();
+          drop(f, 0.15, 0.86, 0.7);
+          ctx.save();
+          const rx = Math.max(0.1, f.R * 0.7), ry = Math.max(0.1, 0.44 * f.H);
+          ctx.translate(cxAt(0.38), f.ay - 0.38 * f.H);
+          ctx.scale(1, ry / rx);
+          const cg = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+          cg.addColorStop(0, '#fffef8');
+          cg.addColorStop(0.42, '#fff5d4');
+          cg.addColorStop(0.78, 'rgba(255,226,150,0.85)');
+          cg.addColorStop(1, 'rgba(255,206,112,0)');
+          ctx.globalAlpha = glow;
+          ctx.fillStyle = cg;
+          ctx.fill();
+          ctx.restore();
+        }
+        if (state === 'out') emitSmoke(t, at);
+        drawEmber(t, at, ember);
+      }
+
+      // a luz da cena acompanha a chama
+      const glowVar = Math.round(Math.min(lit, size) * flick * 1000) / 1000;
+      const litVar = Math.round(lit * 1000) / 1000;
+      if (litVar !== lastLit) { scene.style.setProperty('--lit', litVar); lastLit = litVar; }
+      if (glowVar !== lastGlow) { scene.style.setProperty('--glow', glowVar); lastGlow = glowVar; }
+    }
+
+    function frame(t) {
+      const dt = clamp(t - lastT, 0.001, 0.05);
+      lastT = t;
+      physics(dt);
+      draw(t);
+      if (state === 'off' || !visible) { activeFlames.delete(api); lastX = null; }
+    }
+
+    const api = {
+      frame,
+      layout(xPct, yPct, fw, w) {
+        if (w) {
+          wick = w;
+          wickLen = Math.hypot(w.base[0], w.base[1]);
+          curl = w.base[0] > 0.02 ? -1 : 1;
+        }
+        const d = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.style.left = `calc(${xPct}% - ${fw * 4}px)`;
+        canvas.style.top = `calc(${yPct}% - ${fw * (top ? 8 : 12)}px)`;
+        const key = `${fw.toFixed(2)}|${d}`;
+        if (key === sizeKey) return;
+        sizeKey = key; W = fw; dpr = d; ox = W * 4; oy = W * (top ? 8 : 12);
+        canvas.style.width = `${W * 8}px`;
+        canvas.style.height = `${W * 16}px`;
+        canvas.width = Math.round(W * 8 * dpr);
+        canvas.height = Math.round(W * 16 * dpr);
+        if (!activeFlames.has(api)) draw(lastT || clock());
+      },
+      light() {
+        if (state === 'lit') return;
+        quick = char > 0.9;
+        charFrom = char;
+        state = 'lit';
+        litAt = lastT = clock();
+        nextGust = litAt + 4 + Math.random() * 5;
+        smoke = [];
+        if (reduced) { draw(litAt); return; }
+        lastX = null;
+        if (visible) wakeFlame(api);
+      },
+      snuff() {
+        if (state !== 'lit') return;
+        state = 'out';
+        outAt = lastT = clock();
+        outSize = size; outLit = lit; outSway = (sway >= 0 ? 1 : -1) * 0.5;
+        smoke = []; lastEmit = outAt + 0.06;
+        if (reduced) { state = 'off'; draw(outAt); return; }
+        if (visible) wakeFlame(api);
+      },
+      setVisible(v) {
+        visible = v;
+        if (v && state !== 'off' && !reduced) { lastX = null; wakeFlame(api); }
+      },
+    };
+    return api;
+  }
+
   /* ---------- Velas que podem ser acesas ---------- */
   const scenes = $$('[data-wick]');
+  const sceneIo = 'IntersectionObserver' in window
+    ? new IntersectionObserver((entries) => entries.forEach((e) => e.target.flame.setVisible(e.isIntersecting)))
+    : null;
   scenes.forEach((scene) => {
     scene.classList.add('scene');
     const fx = document.createElement('div');
     fx.className = 'candle-fx';
     fx.setAttribute('aria-hidden', 'true');
-    fx.innerHTML = '<span class="candle-fx__dim"></span><span class="candle-fx__glow"></span><span class="candle-fx__smoke"></span><span class="candle-fx__flame"><i></i></span>';
+    fx.innerHTML = '<span class="candle-fx__dim"></span><span class="candle-fx__glow"></span><canvas class="candle-fx__canvas"></canvas><span class="candle-fx__spot"></span>';
     scene.appendChild(fx);
+    scene.flame = createFlame(scene, $('canvas', fx));
+    if (sceneIo) sceneIo.observe(scene);
   });
   function layoutScene(scene) {
+    const img = $('img', scene);
     const [wx, wy] = scene.dataset.wick.split(',').map(Number);
-    const p = mapPoint(scene, $('img', scene), wx, wy);
+    const p = mapPoint(scene, img, wx, wy);
     if (!p) return;
+    const fw = ((parseFloat(scene.dataset.flame) || 5) / 100) * p.dw;
+    // pavio da foto (base, curva e espessura) medido a partir da ponta, em larguras de chama
+    const rel = (attr) => {
+      if (!scene.dataset[attr]) return null;
+      const [x, y] = scene.dataset[attr].split(',').map(Number);
+      const q = mapPoint(scene, img, x, y);
+      return [((q.x - p.x) / 100) * scene.clientWidth / fw, ((q.y - p.y) / 100) * scene.clientHeight / fw];
+    };
+    const wick = {
+      base: rel('wickBase') || [0, 0.3],
+      bend: rel('wickBend'),
+      w: ((parseFloat(scene.dataset.wickW) || 1) / 100) * p.dw / fw,
+    };
     scene.style.setProperty('--wx', `${p.x}%`);
     scene.style.setProperty('--wy', `${p.y}%`);
-    scene.style.setProperty('--fw', `${((parseFloat(scene.dataset.flame) || 5) / 100) * p.dw}px`);
+    scene.style.setProperty('--fw', `${fw}px`);
+    scene.flame.layout(p.x, p.y, fw, wick);
   }
   function setBurning(scene, on) {
     if (on) {
       layoutScene(scene);
-      scene.classList.remove('is-snuffed');
       scene.classList.add('is-burning');
+      scene.flame.light();
     } else if (scene.classList.contains('is-burning')) {
       scene.classList.remove('is-burning');
-      scene.classList.add('is-snuffed');
-      setTimeout(() => scene.classList.remove('is-snuffed'), 2700);
+      scene.flame.snuff();
     }
+  }
+  // no toque, a área do pavio e da chama também acende e apaga
+  function nearWick(scene, x, y) {
+    layoutScene(scene);
+    const r = scene.getBoundingClientRect();
+    const fw = parseFloat(scene.style.getPropertyValue('--fw')) || 16;
+    const wx = r.left + (parseFloat(scene.style.getPropertyValue('--wx')) / 100) * r.width;
+    const wy = r.top + (parseFloat(scene.style.getPropertyValue('--wy')) / 100) * r.height;
+    return Math.hypot(x - wx, (y - (wy - fw)) * 0.7) < Math.max(30, fw * 1.8);
   }
   function lightButton(label) {
     const b = document.createElement('button');
@@ -177,12 +598,29 @@
       }, delay);
     };
 
-    hero.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') follow(e.clientX, e.clientY); }, { passive: true });
+    hero.addEventListener('pointermove', (e) => follow(e.clientX, e.clientY), { passive: true });
     hero.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') release(0); });
-    // no toque, a luz segue o dedo e volta devagar para a vela
-    hero.addEventListener('touchstart', (e) => { const t = e.touches[0]; measure(); follow(t.clientX, t.clientY); }, { passive: true });
-    hero.addEventListener('touchmove', (e) => { const t = e.touches[0]; follow(t.clientX, t.clientY); }, { passive: true });
-    hero.addEventListener('touchend', () => release(1400), { passive: true });
+
+    // no toque: tocar leva a luz até o dedo e arrastar para o lado a conduz;
+    // arrastar na vertical é rolagem (o navegador cancela o toque) e a luz volta para a vela
+    const ripple = document.createElement('span');
+    ripple.className = 'hero__ripple';
+    ripple.setAttribute('aria-hidden', 'true');
+    hero.appendChild(ripple);
+    hero.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch' || e.target.closest('a, button')) return;
+      measure();
+      follow(e.clientX, e.clientY);
+      ripple.style.left = `${e.clientX - heroRect.left}px`;
+      ripple.style.top = `${e.clientY - heroRect.top}px`;
+      ripple.classList.remove('is-on');
+      void ripple.offsetWidth;
+      ripple.classList.add('is-on');
+      hero.classList.add('hint-done');
+      buzz(6);
+    });
+    hero.addEventListener('pointerup', (e) => { if (e.pointerType === 'touch') release(1800); });
+    hero.addEventListener('pointercancel', (e) => { if (e.pointerType === 'touch') release(250); });
 
     // inclinar o celular move a luz (onde o navegador permite sem pedir autorização)
     if ('DeviceOrientationEvent' in window && typeof DeviceOrientationEvent.requestPermission !== 'function') {
@@ -454,6 +892,14 @@
     revealables.forEach((el) => el.classList.add('is-in'));
   }
 
+  /* ---------- Toque: o item que passa pelo centro da tela ganha o destaque que no computador vem do cursor ---------- */
+  if (touchUI.matches && 'IntersectionObserver' in window) {
+    const focusIo = new IntersectionObserver((entries) => {
+      entries.forEach((e) => e.target.classList.toggle('is-focus', e.isIntersecting));
+    }, { rootMargin: '-45% 0px -45% 0px' });
+    $$('.aroma, .case, .channel, .occasion .link-arrow').forEach((el) => focusIo.observe(el));
+  }
+
   /* ==========================================================
      LIGHTBOX
      ========================================================== */
@@ -518,8 +964,46 @@
   lbTrack.addEventListener('click', (e) => { if (e.target.classList.contains('lightbox__slide')) lightbox.close(); });
   lightbox.addEventListener('close', () => {
     root.style.overflow = '';
+    lightbox.classList.remove('is-dragging', 'is-leaving');
+    lightbox.style.setProperty('--drag', '0px');
+    lightbox.style.setProperty('--dragp', '0');
     if (lbReturn) lbReturn.focus({ preventScroll: true });
   });
+
+  // celular: arrastar a foto para baixo fecha, como nas galerias do telefone
+  let drag = null;
+  lbTrack.addEventListener('touchstart', (e) => {
+    drag = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY, dy: 0, dir: null, t: performance.now() } : null;
+  }, { passive: true });
+  lbTrack.addEventListener('touchmove', (e) => {
+    if (!drag || e.touches.length !== 1) { drag = null; return; }
+    const dx = e.touches[0].clientX - drag.x, dy = e.touches[0].clientY - drag.y;
+    if (!drag.dir) {
+      if (Math.hypot(dx, dy) < 8) return;
+      drag.dir = Math.abs(dy) > Math.abs(dx) ? 'y' : 'x';
+    }
+    if (drag.dir !== 'y') return;
+    drag.dy = Math.max(0, dy);
+    lightbox.classList.add('is-dragging');
+    lightbox.style.setProperty('--drag', `${drag.dy}px`);
+    lightbox.style.setProperty('--dragp', Math.min(1, drag.dy / 320).toFixed(3));
+  }, { passive: true });
+  const endDrag = () => {
+    if (!drag || drag.dir !== 'y') { drag = null; return; }
+    const speed = drag.dy / Math.max(1, performance.now() - drag.t);
+    lightbox.classList.remove('is-dragging');
+    if (drag.dy > 110 || (drag.dy > 40 && speed > 0.5)) {
+      lightbox.classList.add('is-leaving');
+      lightbox.style.setProperty('--drag', `${drag.dy + 80}px`);
+      setTimeout(() => lightbox.close(), reduced ? 0 : 220);
+    } else {
+      lightbox.style.setProperty('--drag', '0px');
+      lightbox.style.setProperty('--dragp', '0');
+    }
+    drag = null;
+  };
+  lbTrack.addEventListener('touchend', endDrag);
+  lbTrack.addEventListener('touchcancel', endDrag);
 
   /* ==========================================================
      GALERIAS
@@ -610,7 +1094,12 @@
       startX = null;
     });
     const openHere = () => openLightbox(shots.map((s) => $('img', s)), index, title, zoom);
-    stage.addEventListener('click', () => { if (!swiped) openHere(); });
+    stage.addEventListener('click', (e) => {
+      if (swiped) return;
+      const shot = shots[index];
+      if (toggleLight && touchUI.matches && shot.hasAttribute('data-wick') && nearWick(shot, e.clientX, e.clientY)) toggleLight();
+      else openHere();
+    });
     zoom.addEventListener('click', openHere);
     frame.addEventListener('keydown', (e) => {
       if (e.target.closest('.thumb, .g-btn') === null) return;
@@ -619,28 +1108,49 @@
     });
 
     // acender a vela (só nas galerias com velas apagadas)
-    let lightBtn = null;
+    let lightBtn = null, toggleLight = null;
     const wickShots = shots.filter((s) => s.hasAttribute('data-wick'));
     if (wickShots.length) {
       lightBtn = lightButton('Acender a vela');
       setLightButton(lightBtn, false);
       frame.appendChild(lightBtn);
       let lit = false;
-      lightBtn.addEventListener('click', () => {
+      toggleLight = () => {
         lit = !lit;
         setLightButton(lightBtn, lit);
         wickShots.forEach((s) => setBurning(s, lit));
-        if (lit) buzz(12);
-      });
-      // um convite discreto na primeira vez que a galeria aparece
+        buzz(lit ? [6, 30, 12] : 8);
+      };
+      lightBtn.addEventListener('click', toggleLight);
+      // um convite discreto na primeira vez que a galeria aparece (no toque, o pavio também pulsa)
       new IntersectionObserver(([en], obs) => {
         if (!en.isIntersecting) return;
         setTimeout(() => {
+          const shot = shots[index];
           lightBtn.classList.add('is-hinting');
-          setTimeout(() => lightBtn.classList.remove('is-hinting'), 4000);
+          if (shot.hasAttribute('data-wick')) { layoutScene(shot); shot.classList.add('is-hinting'); }
+          setTimeout(() => { lightBtn.classList.remove('is-hinting'); shot.classList.remove('is-hinting'); }, 4000);
         }, 1200);
         obs.disconnect();
       }, { threshold: 0.6 }).observe(frame);
+    }
+
+    // celular: uma espiadinha na primeira vez mostra que dá para deslizar entre as fotos
+    if (shots.length > 1 && !reduced) {
+      new IntersectionObserver(([en], obs) => {
+        if (!en.isIntersecting || !mqMobile.matches || !touchUI.matches) return;
+        obs.disconnect();
+        setTimeout(() => {
+          if (stage.scrollLeft > 4) return;
+          const done = (e) => {
+            if (e.animationName !== 'peek') return;
+            stage.classList.remove('is-peeking');
+            stage.removeEventListener('animationend', done);
+          };
+          stage.addEventListener('animationend', done);
+          stage.classList.add('is-peeking');
+        }, 700);
+      }, { threshold: 0.7 }).observe(stage);
     }
     setActive(0, true);
   });
@@ -914,11 +1424,16 @@
     setLightButton(lb, false);
     labelPhoto.appendChild(lb);
     let labelLit = false;
-    lb.addEventListener('click', () => {
+    const toggleLabelLight = () => {
       labelLit = !labelLit;
       setLightButton(lb, labelLit);
       setBurning(labelPhoto, labelLit);
-      if (labelLit) buzz(12);
+      buzz(labelLit ? [6, 30, 12] : 8);
+    };
+    lb.addEventListener('click', toggleLabelLight);
+    labelPhoto.addEventListener('click', (e) => {
+      if (e.target === lb || lb.contains(e.target)) return;
+      if (touchUI.matches && nearWick(labelPhoto, e.clientX, e.clientY)) toggleLabelLight();
     });
   }
 })();
